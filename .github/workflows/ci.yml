@@ -46,7 +46,15 @@ jobs:
         run: npm run typecheck
 
       - name: Test
-        run: npm test
+        run: npm run test:coverage
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: coverage-node-${{ matrix.node-version }}
+          path: coverage
+          if-no-files-found: warn
 
       - name: Build
         run: npm run build
