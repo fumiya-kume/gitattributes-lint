@@ -1,99 +1,225 @@
 # gitattributes-lint
 
-A semantic linter for `.gitattributes` files, powered by Git's attribute resolution engine.
+A semantic linter for `.gitattributes` files, powered by Git's attribute
+resolution engine.
 
-## Status
+`gitattributes-lint` validates attribute syntax and built-in values, warns about
+likely typos and unused patterns, and reports the effective attributes Git sees
+across a repository. Custom attributes remain valid.
 
-The CLI and the first semantic lint rules are in place.
+## Requirements
 
-The current implementation reads the target file and reports:
+- Node.js 20 or later
+- Git available on `PATH`
 
-- with no path, it checks `.gitattributes` in the current directory first;
-- if that file is absent, it checks `.gitattributes` at the repository root;
-- with a path, it reads that file directly.
+## Installation
 
-Attribute expressions are classified against Git's built-in attribute catalog.
-Custom attributes remain valid because Git supports repository-defined
-attributes. Assignments in Git's reserved `builtin_*` namespace are rejected.
-The catalog includes `text`, `eol`, `crlf`, `working-tree-encoding`, `ident`,
-`filter`, `diff`, `merge`, `conflict-marker-size`, `whitespace`,
+Install the package globally:
+
+```sh
+npm install --global @fumiya-kume/gitattributes-lint
+```
+
+Or add it to a project and run the local binary:
+
+```sh
+npm install --save-dev @fumiya-kume/gitattributes-lint
+npx gitattributes-lint
+```
+
+## Quick start
+
+Run the linter from a repository containing a `.gitattributes` file:
+
+```sh
+gitattributes-lint
+```
+
+A valid file prints:
+
+```text
+true
+```
+
+Diagnostics include the file, source location, severity, and rule name:
+
+```text
+/repo/.gitattributes:2:7 error gitattributes/invalid-eol-value: eol must be either lf or crlf, received "windows".
+1 error(s), 0 warning(s)
+```
+
+When no path is supplied, the linter checks `.gitattributes` in the selected
+working directory first. If it is absent, the repository-root `.gitattributes`
+is used. An explicit path is read directly.
+
+## CLI
+
+```text
+gitattributes-lint [options] [path]
+```
+
+| Option | Description |
+| --- | --- |
+| `-C, --cwd <directory>` | Select the working directory used for file and repository discovery. |
+| `-f, --format <format>` | Select `stylish` (default) or `json` output. |
+| `--strict` | Treat warnings as failures. |
+| `--allow-attribute <name>` | Suppress typo warnings for a custom attribute; repeat for multiple names. |
+| `--no-config` | Explicitly disable JavaScript configuration loading. |
+| `-V, --version` | Print the installed version. |
+| `-h, --help` | Print CLI help. |
+
+Examples:
+
+```sh
+# Check the default .gitattributes file.
+gitattributes-lint
+
+# Check a specific file.
+gitattributes-lint path/to/.gitattributes
+
+# Run as though invoked from another repository.
+gitattributes-lint --cwd path/to/repository
+
+# Produce machine-readable output and fail on warnings.
+gitattributes-lint --format json --strict
+
+# Allow legitimate custom names that resemble built-in attributes.
+gitattributes-lint \
+  --allow-attribute diff2 \
+  --allow-attribute text2
+```
+
+For an untrusted repository, make the configuration policy explicit:
+
+```sh
+gitattributes-lint --no-config --strict --format json
+```
+
+The current release does not auto-load JavaScript configuration files.
+`--no-config` records that choice in JSON output and reserves the behavior for
+future configuration support; JSON configuration is not implemented yet.
+
+## What it checks
+
+The parser recognizes set, unset, value, and unspecified attribute states,
+custom macros, comments, and Git-style C-quoted tokens. It reports errors for:
+
+- malformed rules, quoted tokens, attribute names, or macro names;
+- negative patterns, which Git does not support in `.gitattributes`;
+- assignments in Git's reserved `builtin_*` namespace;
+- `eol` values other than `lf` or `crlf`;
+- `text` values other than `auto`;
+- missing values for `working-tree-encoding`;
+- non-positive `conflict-marker-size` values; and
+- inputs or Git results that exceed a resource limit.
+
+Warnings report:
+
+- a custom attribute with one unique built-in name within Levenshtein distance
+  2;
+- `working-tree-encoding` without an explicit `text` policy in the same rule;
+- `binary` combined with `text`, `diff`, or `merge`; and
+- a pattern that matches none of the checked repository paths.
+
+Warnings do not fail the command unless `--strict` is used. Custom attributes
+are accepted by default because Git allows repositories to define them. Use
+`--allow-attribute` only when a legitimate custom name triggers a typo warning.
+
+The built-in catalog covers `text`, `eol`, `crlf`, `working-tree-encoding`,
+`ident`, `filter`, `diff`, `merge`, `conflict-marker-size`, `whitespace`,
 `export-ignore`, `export-subst`, `delta`, `encoding`, and the `binary` macro.
 
-When the target file belongs to a Git repository, the file analysis also runs
-`git check-attr --all --stdin -z` against the repository's tracked and
-non-ignored working-tree paths. This exposes the effective built-in and custom
-attributes returned by Git, including attributes inherited from Git's normal
-attribute sources.
+## Git-aware analysis
 
-Git path and attribute output is consumed as a NUL-delimited stream. The
-linter does not retain the repository's complete file list or all effective
-attribute records in memory; it keeps only counts, effective attribute names,
-and the rules matched while paths pass through the stream. The linter reads
-the selected `.gitattributes` file only and does not read the contents of
-other working-tree files. Git may still inspect its own index, configuration,
-and attribute sources while resolving attributes.
-
-The Git integration is read-only with respect to attribute drivers. It does
-not execute `filter.*.clean`, `filter.*.smudge`, `filter.*.process`,
-`diff.*.command`, or `merge.*.driver`; Git is invoked with an argument array
-and `shell: false`.
-
-For an untrusted repository, disable JavaScript configuration explicitly:
+When the selected file belongs to a Git repository, the linter streams tracked
+paths and untracked, non-ignored working-tree paths through:
 
 ```sh
-gitattributes-lint --no-config --format json
+git check-attr --all --stdin -z
 ```
 
-The current release does not auto-load JavaScript configuration files at all;
-`--no-config` makes that security decision explicit and is propagated through
-the analysis API for future configuration support. A JSON-only configuration
-mode is not implemented yet.
+This provides the effective built-in and custom attributes returned by Git,
+including values inherited from Git's normal attribute sources. It also allows
+the linter to warn about patterns that match no checked path. Outside a Git
+repository, the selected file is still parsed and validated, but effective
+attribute and unused-pattern analysis is skipped.
 
-Custom attributes remain valid. A warning is emitted only when an attribute is
-unknown, has a unique closest built-in attribute, and its Levenshtein distance
-is at most 2. Ties and distant candidates are ignored. Explicitly allow a
-legitimate custom name when needed:
+Path and attribute output is consumed as a NUL-delimited stream. The linter
+retains counts, unique effective attribute names, and matched rules rather than
+the complete repository path and attribute result sets.
 
-```sh
-gitattributes-lint --allow-attribute vendor-flag
-```
+## Output and exit codes
 
-The analysis API accepts the same allow list as `allowedAttributes`.
+| Result | Exit code |
+| --- | ---: |
+| No errors | `0` |
+| Warnings without `--strict` | `0` |
+| Errors | `1` |
+| Warnings with `--strict` | `1` |
+| Missing input, Git failure, or resource failure | `1` |
 
-The linter also checks every rule for syntax errors, negative patterns, invalid
-built-in values, conflicting `binary` rules, and patterns that match no checked
-repository path. Unused patterns are warnings by default; use `--strict` to
-make warnings fail the command.
+JSON output includes:
 
-Resource limits protect CI and untrusted-repository runs. Each analysis request
-shares a 30-second deadline, a 64 MiB aggregate Git stream budget, a 24 MiB
-parser-retained-memory budget, and a 5,000,000-operation pattern-matching
-budget. A `.gitattributes` file is limited to 1 MiB, 16 KiB per line, 50,000
-lines, 25,000 rules, and 4 KiB per attribute value. Git output is limited to
-100,000 paths, 16 KiB per path or field, and 1,000,000 attribute results. The
-matcher is an explicit bounded implementation for literals, character classes,
-`*`, `?`, and recursive `**` globs; it does not construct a backtracking
-`RegExp`. Diagnostics are capped at 1,000 entries; exceeding a limit fails
-closed with a `resource-limit` diagnostic or resource error and exit code `1`.
+- the resolved file and configuration mode;
+- declared built-in and custom attribute names;
+- effective built-in and custom attribute names;
+- checked-path and effective-attribute counts;
+- errors, warnings, and unused patterns; and
+- `valid`, which reflects the selected strictness policy.
+
+## Security and resource limits
+
+The linter reads the selected `.gitattributes` file but not the contents of
+other working-tree files. Git may inspect its index, configuration, and normal
+attribute sources while resolving effective attributes.
+
+Git is invoked with an argument array and `shell: false`. Attribute drivers are
+not executed: the linter does not run `filter.*.clean`, `filter.*.smudge`,
+`filter.*.process`, `diff.*.command`, or `merge.*.driver`.
+
+Each analysis request shares these primary limits:
+
+- 30-second elapsed-time deadline;
+- 1 MiB `.gitattributes` input, 16 KiB per line, 50,000 lines, 25,000 rules,
+  100,000 parsed attributes, and 4 KiB per attribute value;
+- 24 MiB parser-retained-memory budget;
+- 64 MiB aggregate Git stream budget, 100,000 paths, 16 KiB per path or field,
+  and 1,000,000 effective attribute results;
+- 5,000,000 repository pattern checks and 5,000,000 matcher operations; and
+- 1,000 retained diagnostics.
+
+The bounded matcher supports literals, character classes, `*`, `?`, and
+recursive `**` globs without constructing a backtracking regular expression.
+Exceeding a limit fails closed with a `resource-limit` diagnostic or resource
+error and exit code `1`.
 
 ## Development
 
+Install dependencies and run the complete local checks:
+
 ```sh
-npm install
-npm run typecheck
+npm ci
 npm run lint
+npm run typecheck
 npm test
+npm run test:coverage
 npm run build
+npm run check:package
+```
+
+After building, exercise the local CLI with:
+
+```sh
 node dist/cli.js --help
 node dist/cli.js
 node dist/cli.js path/to/.gitattributes
-node dist/cli.js --format json
-node dist/cli.js --strict --format json
+node dist/cli.js --format json --strict
 ```
 
-Exit code `0` means the check passed. Errors return `1`; warnings return `0`
-unless `--strict` is specified. JSON output includes declared and effective
-built-in/custom attributes, checked path and effective attribute counts,
-errors, warnings, and unused patterns.
+`npm run test:coverage` writes text, JSON summary, LCOV, and HTML reports to
+`coverage/`. CI publishes that directory as an artifact for every supported
+Node.js version.
 
-The published command will be `gitattributes-lint`.
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
