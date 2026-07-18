@@ -4,13 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   GitattributesNotFoundError,
+  GitattributesResourceLimitError,
   GitattributesValidationError,
   analyzeGitattributesFile,
   getLintExitCode,
   lint,
   resolveGitattributesFile,
 } from "../src/linter.js";
+import { execFile } from "node:child_process";
 import { RESOURCE_LIMITS } from "../src/limits.js";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 describe("linter API", () => {
   it("returns the expected exit code for errors and strict warnings", () => {
@@ -146,6 +151,30 @@ describe("linter API", () => {
       expect(analysis.issues.at(-1)).toMatchObject({ code: "resource-limit" });
       expect(analysis.unusedPatterns).toHaveLength(RESOURCE_LIMITS.maxDiagnostics - 1);
       expect(analysis.valid).toBe(false);
+    } finally {
+      await rm(repository, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds unique effective attribute names", async () => {
+    const repository = await mkdtemp(join(tmpdir(), "gitattributes-lint-"));
+
+    try {
+      const source = Array.from(
+        { length: RESOURCE_LIMITS.maxUniqueEffectiveAttributeNames + 1 },
+        (_, index) => `* vendor-${String(index)}`
+      ).join("\n");
+      await writeFile(join(repository, ".gitattributes"), `${source}\n`, "utf8");
+      await writeFile(join(repository, "file.txt"), "content\n", "utf8");
+      await execFileAsync("git", ["init", "--quiet", repository]);
+      await execFileAsync("git", ["-C", repository, "add", "."]);
+
+      await expect(
+        analyzeGitattributesFile({
+          cwd: repository,
+          path: join(repository, ".gitattributes"),
+        })
+      ).rejects.toBeInstanceOf(GitattributesResourceLimitError);
     } finally {
       await rm(repository, { recursive: true, force: true });
     }
