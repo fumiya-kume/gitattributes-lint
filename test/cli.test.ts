@@ -89,6 +89,32 @@ describe("gitattributes-lint CLI", () => {
     }
   });
 
+  it("includes unused patterns in JSON reports", async () => {
+    const repository = await mkdtemp(join(tmpdir(), "gitattributes-lint-"));
+
+    try {
+      await execFileAsync("git", ["init", "--quiet", repository]);
+      const filePath = join(repository, ".gitattributes");
+      await writeFile(filePath, "*.md text\n*.psd binary\n", "utf8");
+      await writeFile(join(repository, "README.md"), "readme\n", "utf8");
+      await execFileAsync("git", ["-C", repository, "add", "."]);
+
+      const result = await runCli([
+        "node",
+        "gitattributes-lint",
+        "--format",
+        "json",
+        filePath,
+      ]);
+      const report = JSON.parse(result.logs[0] ?? "{}");
+
+      expect(result.exitCode).toBe(0);
+      expect(report.unusedPatterns).toEqual([{ line: 2, pattern: "*.psd" }]);
+    } finally {
+      await rm(repository, { recursive: true, force: true });
+    }
+  });
+
   it("prints stylish diagnostics and fails for invalid input", async () => {
     const directory = await mkdtemp(join(tmpdir(), "gitattributes-lint-"));
 
@@ -212,6 +238,19 @@ describe("gitattributes-lint CLI", () => {
 
       expect(isMainModule(symlinkPath, target)).toBe(true);
       expect(isMainModule(undefined, target)).toBe(false);
+      expect(isMainModule(join(directory, "missing"), target)).toBe(false);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("propagates non-Commander action errors from main", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "gitattributes-lint-"));
+
+    try {
+      await expect(
+        main(["node", "gitattributes-lint", join(directory, "missing.gitattributes")])
+      ).rejects.toThrow();
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
