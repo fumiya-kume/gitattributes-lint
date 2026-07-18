@@ -29,7 +29,21 @@ describe("Git-backed attribute analysis", () => {
       await expect(isGitCaseInsensitive(repository)).resolves.toBe(true);
       await execFileAsync("git", ["-C", repository, "config", "core.ignorecase", "false"]);
       await expect(isGitCaseInsensitive(repository)).resolves.toBe(false);
+      await execFileAsync("git", ["-C", repository, "config", "--unset", "core.ignorecase"]);
+      await expect(isGitCaseInsensitive(repository)).resolves.toBe(false);
       await expect(findGitRepositoryRoot(parent)).resolves.toBeUndefined();
+      await expect(
+        findGitRepositoryRoot(repository, new AnalysisBudget({ maxElapsedMs: 0 }))
+      ).rejects.toMatchObject({
+        kind: "analysis-time",
+        name: "AnalysisResourceLimitError",
+      });
+      await expect(
+        isGitCaseInsensitive(repository, new AnalysisBudget({ maxElapsedMs: 0 }))
+      ).rejects.toMatchObject({
+        kind: "analysis-time",
+        name: "AnalysisResourceLimitError",
+      });
     } finally {
       await rm(parent, { recursive: true, force: true });
     }
@@ -314,6 +328,32 @@ describe("Git-backed attribute analysis", () => {
       expect(analysis.unusedPatterns.map(({ pattern }) => pattern)).toEqual([
         "/foo.txt",
       ]);
+    } finally {
+      await rm(repository, { recursive: true, force: true });
+    }
+  });
+
+  it("matches patterns relative to a nested attribute file directory", async () => {
+    const repository = await mkdtemp(join(tmpdir(), "gitattributes-lint-"));
+    const nestedDirectory = join(repository, "nested");
+
+    try {
+      await mkdir(nestedDirectory);
+      await execFileAsync("git", ["init", "--quiet", repository]);
+      const filePath = join(nestedDirectory, ".gitattributes");
+      await writeFile(filePath, "*.md text\n", "utf8");
+      await writeFile(join(repository, "README.md"), "root\n", "utf8");
+      await writeFile(join(nestedDirectory, "guide.md"), "guide\n", "utf8");
+      await execFileAsync("git", ["-C", repository, "add", "."]);
+
+      const analysis = await analyzeGitattributesFile({
+        cwd: repository,
+        path: filePath,
+      });
+
+      expect(analysis.unusedPatterns).toEqual([]);
+      expect(analysis.checkedPathCount).toBeGreaterThanOrEqual(3);
+      expect(analysis.effectiveBuiltinAttributeNames).toContain("text");
     } finally {
       await rm(repository, { recursive: true, force: true });
     }

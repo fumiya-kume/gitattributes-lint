@@ -263,6 +263,42 @@ describe("gitattributes attribute analysis", () => {
     ]);
   });
 
+  it("stops while loading allowed attributes when the shared budget is exhausted", () => {
+    const source = "*.txt vendor-flag\n";
+    const analysis = analyzeGitattributes(source, {
+      allowedAttributes: ["vendor-flag"],
+      budget: new AnalysisBudget({
+        maxParserRetainedBytes: Buffer.byteLength(source, "utf8") * 2,
+      }),
+    });
+
+    expect(analysis.valid).toBe(false);
+    expect(analysis.rules).toEqual([]);
+    expect(analysis.issues).toEqual([
+      expect.objectContaining({ code: "resource-limit" }),
+    ]);
+  });
+
+  it("reports an elapsed budget failure at the start of a line", () => {
+    let calls = 0;
+    const budget = new AnalysisBudget({
+      maxElapsedMs: 1,
+      now: () => {
+        calls += 1;
+        return calls <= 2 ? 0 : 1;
+      },
+    });
+    const analysis = analyzeGitattributes("*.txt text\n", { budget });
+
+    expect(analysis.valid).toBe(false);
+    expect(analysis.issues).toEqual([
+      expect.objectContaining({
+        code: "resource-limit",
+        line: 1,
+      }),
+    ]);
+  });
+
   it("accepts files exactly at the line and rule limits", () => {
     const lineLimitedSource =
       Array.from(
