@@ -1,6 +1,6 @@
 {
   "name": "@fumiya-kume/gitattributes-lint",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "A semantic linter for .gitattributes files, powered by Git's attribute resolution engine.",
   "keywords": [
     "git",
