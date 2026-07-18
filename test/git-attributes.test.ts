@@ -4,12 +4,122 @@ import { access, chmod, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { findGitRepositoryRoot } from "../src/git-attributes.js";
+import {
+  findGitRepositoryRoot,
+  isGitCaseInsensitive,
+  scanGitAttributes,
+} from "../src/git-attributes.js";
 import { analyzeGitattributesFile } from "../src/linter.js";
 
 const execFileAsync = promisify(execFile);
 
 describe("Git-backed attribute analysis", () => {
+  it("reports Git case sensitivity and returns undefined outside a repository", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "gitattributes-lint-"));
+    const repository = join(parent, "repo");
+
+    try {
+      await mkdir(repository);
+      await execFileAsync("git", ["init", "--quiet", repository]);
+      await execFileAsync("git", ["-C", repository, "config", "core.ignorecase", "true"]);
+
+      await expect(isGitCaseInsensitive(repository)).resolves.toBe(true);
+      await execFileAsync("git", ["-C", repository, "config", "core.ignorecase", "false"]);
+      await expect(isGitCaseInsensitive(repository)).resolves.toBe(false);
+      await expect(findGitRepositoryRoot(parent)).resolves.toBeUndefined();
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("streams paths and effective attributes through async handlers", async () => {
+    const repository = await mkdtemp(join(tmpdir(), "gitattributes-lint-"));
+    const paths: string[] = [];
+    const attributes: Array<{ name: string; path: string; value: string }> = [];
+
+    try {
+      await execFileAsync("git", ["init", "--quiet", repository]);
+      await writeFile(
+        join(repository, ".gitattributes"),
+        "* text custom=value\n",
+        "utf8"
+      );
+      await writeFile(join(repository, "guide.md"), "guide\n", "utf8");
+      await execFileAsync("git", ["-C", repository, "add", "."]);
+
+      const result = await scanGitAttributes(repository, [], {
+        onAttribute: async (attribute) => {
+          await Promise.resolve();
+          attributes.push(attribute);
+        },
+        onPath: async (path) => {
+          await Promise.resolve();
+          paths.push(path);
+        },
+      });
+
+      expect(result.checkedPathCount).toBe(paths.length);
+      expect(result.effectiveAttributeCount).toBe(attributes.length);
+      expect(paths).toEqual(expect.arrayContaining(["guide.md"]));
+      expect(attributes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: "text", path: "guide.md", value: "set" }),
+          expect.objectContaining({ name: "custom", path: "guide.md", value: "value" }),
+        ])
+      );
+    } finally {
+      await rm(repository, { recursive: true, force: true });
+    }
+  });
+
+  it("does not reject Git's known negative-pattern advisory", async () => {
+    const repository = await mkdtemp(join(tmpdir(), "gitattributes-lint-"));
+
+    try {
+      await execFileAsync("git", ["init", "--quiet", repository]);
+      await writeFile(
+        join(repository, ".gitattributes"),
+        "!ignored.txt text\n*.txt text\n",
+        "utf8"
+      );
+      await writeFile(join(repository, "file.txt"), "content\n", "utf8");
+      await execFileAsync("git", ["-C", repository, "add", "."]);
+
+      const analysis = await analyzeGitattributesFile({
+        cwd: repository,
+        path: join(repository, ".gitattributes"),
+      });
+
+      expect(analysis.errors).toEqual([
+        expect.objectContaining({ code: "negative-pattern" }),
+      ]);
+    } finally {
+      await rm(repository, { recursive: true, force: true });
+    }
+  });
+
+  it("terminates the scan when an asynchronous handler fails", async () => {
+    const repository = await mkdtemp(join(tmpdir(), "gitattributes-lint-"));
+
+    try {
+      await execFileAsync("git", ["init", "--quiet", repository]);
+      await writeFile(join(repository, ".gitattributes"), "* text\n", "utf8");
+      await writeFile(join(repository, "file.txt"), "content\n", "utf8");
+      await execFileAsync("git", ["-C", repository, "add", "."]);
+
+      await expect(
+        scanGitAttributes(repository, [], {
+          onAttribute: async () => {
+            await Promise.resolve();
+            throw new Error("handler failed");
+          },
+        })
+      ).rejects.toThrow("handler failed");
+    } finally {
+      await rm(repository, { recursive: true, force: true });
+    }
+  });
+
   it("uses git check-attr to collect effective built-in and custom attributes", async () => {
     const repository = await mkdtemp(join(tmpdir(), "gitattributes-lint-"));
     const nestedDirectory = join(repository, "docs");

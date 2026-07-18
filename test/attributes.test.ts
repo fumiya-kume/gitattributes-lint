@@ -228,6 +228,13 @@ describe("gitattributes attribute analysis", () => {
     expect(allowed.issues).toEqual([
       expect.objectContaining({ code: "resource-limit" }),
     ]);
+
+    const oversizedAllowedName = analyzeGitattributes("*.txt vendor-flag", {
+      allowedAttributes: ["x".repeat(RESOURCE_LIMITS.maxAttributeNameLength + 1)],
+    });
+    expect(oversizedAllowedName.issues).toEqual([
+      expect.objectContaining({ code: "resource-limit" }),
+    ]);
   });
 
   it("stops at the configured retained parser budget", () => {
@@ -240,6 +247,20 @@ describe("gitattributes attribute analysis", () => {
       expect.objectContaining({ code: "resource-limit" }),
     ]);
     expect(analysis.rules).toEqual([]);
+  });
+
+  it("records a diagnostic when retained budget fails during rule parsing", () => {
+    const source = "*.txt text\n";
+    const analysis = analyzeGitattributes(source, {
+      budget: new AnalysisBudget({
+        maxParserRetainedBytes: Buffer.byteLength(source, "utf8") * 2,
+      }),
+    });
+
+    expect(analysis.valid).toBe(false);
+    expect(analysis.issues).toEqual([
+      expect.objectContaining({ code: "resource-limit" }),
+    ]);
   });
 
   it("accepts files exactly at the line and rule limits", () => {
@@ -260,5 +281,42 @@ describe("gitattributes attribute analysis", () => {
     expect(ruleLimited.valid).toBe(true);
     expect(ruleLimited.rules).toHaveLength(RESOURCE_LIMITS.maxGitattributesRules);
     expect(ruleLimited.issues).toEqual([]);
+
+    const overRuleLimit = analyzeGitattributes(`${ruleLimitedSource}\nlast text`);
+    expect(overRuleLimit.rules).toHaveLength(RESOURCE_LIMITS.maxGitattributesRules);
+    expect(overRuleLimit.issues).toEqual([
+      expect.objectContaining({ code: "resource-limit" }),
+    ]);
+
+    const overLineLimit = analyzeGitattributes(
+      `${lineLimitedSource}# one more line\n`
+    );
+    expect(overLineLimit.issues).toEqual([
+      expect.objectContaining({ code: "resource-limit" }),
+    ]);
+  });
+
+  it("rejects the attribute limit without hitting the retained budget first", () => {
+    const attributesPerRule = RESOURCE_LIMITS.maxTokensPerLine - 1;
+    let remaining = RESOURCE_LIMITS.maxGitattributesAttributes;
+    const lines: string[] = [];
+    let ruleIndex = 0;
+
+    while (remaining > 0) {
+      const count = Math.min(remaining, attributesPerRule);
+      const names = Array.from({ length: count }, () => "a");
+      lines.push(`file-${String(ruleIndex)} ${names.join(" ")}`);
+      remaining -= count;
+      ruleIndex += 1;
+    }
+
+    const analysis = analyzeGitattributes(`${lines.join("\n")}\nlast extra`, {
+      budget: new AnalysisBudget({ maxParserRetainedBytes: 128 * 1024 * 1024 }),
+    });
+
+    expect(analysis.attributes).toHaveLength(RESOURCE_LIMITS.maxGitattributesAttributes);
+    expect(analysis.issues).toEqual([
+      expect.objectContaining({ code: "resource-limit" }),
+    ]);
   });
 });
