@@ -1,0 +1,62 @@
+{
+  "name": "@fumiya-kume/gitattributes-lint",
+  "version": "0.1.0",
+  "description": "A semantic linter for .gitattributes files, powered by Git's attribute resolution engine.",
+  "keywords": [
+    "git",
+    "gitattributes",
+    "git-attributes",
+    "lint",
+    "linter",
+    "validator",
+    "cli",
+    "github-linguist",
+    "git-lfs"
+  ],
+  "license": "Apache-2.0",
+  "author": {
+    "name": "Fumiya Kume"
+  },
+  "type": "module",
+  "bin": {
+    "gitattributes-lint": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fumiya-kume/gitattributes-lint.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fumiya-kume/gitattributes-lint/issues"
+  },
+  "homepage": "https://github.com/fumiya-kume/gitattributes-lint#readme",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "prepack": "npm run build && npm test",
+    "check:package": "npm pack --ignore-scripts --dry-run"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "commander": "^14.0.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.1.1",
+    "eslint": "^10.7.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.64.0",
+    "vitest": "^4.1.10"
+  }
+}
