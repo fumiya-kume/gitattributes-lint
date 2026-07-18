@@ -1,11 +1,38 @@
 import { describe, expect, it } from "vitest";
-import { matchesGitattributesPattern } from "../src/patterns.js";
+import {
+  compileGitattributesPattern,
+  GitattributesPatternResourceLimitError,
+  matchesGitattributesPattern,
+} from "../src/patterns.js";
+import { AnalysisBudget } from "../src/resource-budget.js";
 
 describe(".gitattributes pattern matching", () => {
+  it("matches basenames for patterns without slashes", () => {
+    expect(matchesGitattributesPattern("*.txt", "docs/readme.txt")).toBe(true);
+    expect(matchesGitattributesPattern("*.txt", "docs/readme.md")).toBe(false);
+    expect(matchesGitattributesPattern("a?c", "nested/abc")).toBe(true);
+    expect(matchesGitattributesPattern("a?c", "nested/a/c")).toBe(false);
+  });
+
+  it("keeps segment wildcards from crossing path separators", () => {
+    expect(matchesGitattributesPattern("a/*/c", "a/b/c")).toBe(true);
+    expect(matchesGitattributesPattern("a/*/c", "a/b/d/c")).toBe(false);
+    expect(matchesGitattributesPattern("a/?/c", "a/b/c")).toBe(true);
+    expect(matchesGitattributesPattern("a/?/c", "a/bb/c")).toBe(false);
+  });
+
   it("only treats slash-delimited double stars as recursive", () => {
     expect(matchesGitattributesPattern("a/**/b.txt", "a/b.txt")).toBe(true);
     expect(matchesGitattributesPattern("a/**/b.txt", "a/nested/b.txt")).toBe(true);
     expect(matchesGitattributesPattern("a/foo**bar", "a/foo/nested/bar")).toBe(false);
+  });
+
+  it("supports zero or more directory levels for recursive directory stars", () => {
+    expect(matchesGitattributesPattern("**/README.md", "README.md")).toBe(true);
+    expect(matchesGitattributesPattern("**/README.md", "docs/README.md")).toBe(true);
+    expect(matchesGitattributesPattern("**/README.md", "docs/api/README.md")).toBe(true);
+    expect(matchesGitattributesPattern("a/**", "a")).toBe(false);
+    expect(matchesGitattributesPattern("a/**", "a/file.txt")).toBe(true);
   });
 
   it("anchors a leading slash to the attribute file directory", () => {
@@ -25,6 +52,23 @@ describe(".gitattributes pattern matching", () => {
     expect(matchesGitattributesPattern("[[:digit:]a-f]", "g")).toBe(false);
   });
 
+  it.each([
+    ["alnum", "7", true],
+    ["blank", "\t", true],
+    ["lower", "z", true],
+    ["space", "\n", true],
+    ["upper", "Z", true],
+    ["xdigit", "F", true],
+    ["xdigit", "g", false],
+  ] as const)("supports POSIX class %s with %s", (name, character, expected) => {
+    expect(matchesGitattributesPattern(`[[:${name}:]]`, character)).toBe(expected);
+  });
+
+  it("supports caret-negated character classes", () => {
+    expect(matchesGitattributesPattern("[^0-9]", "a")).toBe(true);
+    expect(matchesGitattributesPattern("[^0-9]", "5")).toBe(false);
+  });
+
   it("supports the complete Git POSIX class catalog", () => {
     expect(matchesGitattributesPattern("[[:cntrl:]]", "\n")).toBe(true);
     expect(matchesGitattributesPattern("[[:graph:]]", "a")).toBe(true);
@@ -38,6 +82,13 @@ describe(".gitattributes pattern matching", () => {
     expect(matchesGitattributesPattern("[]a]", "a")).toBe(true);
     expect(matchesGitattributesPattern("[]a]", "]")).toBe(true);
     expect(matchesGitattributesPattern("[]a]", "b")).toBe(false);
+  });
+
+  it("supports escaped glob metacharacters as literals", () => {
+    expect(matchesGitattributesPattern(String.raw`\*.txt`, "*.txt")).toBe(true);
+    expect(matchesGitattributesPattern(String.raw`\?.txt`, "?.txt")).toBe(true);
+    expect(matchesGitattributesPattern(String.raw`\[name\]`, "[name]")).toBe(true);
+    expect(matchesGitattributesPattern(String.raw`a\\b`, "a\\b")).toBe(true);
   });
 
   it("preserves a literal leading ./ in a pattern", () => {
@@ -60,6 +111,13 @@ describe(".gitattributes pattern matching", () => {
     expect(matchesGitattributesPattern("foo\\", "foo\\")).toBe(false);
     expect(matchesGitattributesPattern("[z-a]", "z")).toBe(true);
     expect(matchesGitattributesPattern("[z-a]", "a")).toBe(false);
+    expect(matchesGitattributesPattern("[[:unknown:]]", "a")).toBe(false);
+  });
+
+  it("returns false for empty and trailing-slash patterns", () => {
+    expect(matchesGitattributesPattern("", "anything")).toBe(false);
+    expect(matchesGitattributesPattern("directory/", "directory/file.txt")).toBe(false);
+    expect(compileGitattributesPattern("")("anything")).toBe(false);
   });
 
   it("preserves backslashes in Git pathnames", () => {
@@ -70,5 +128,40 @@ describe(".gitattributes pattern matching", () => {
   it("allows recursive stars to span line terminators in pathnames", () => {
     expect(matchesGitattributesPattern("a/**/b.txt", "a/x\n/y/b.txt")).toBe(true);
     expect(matchesGitattributesPattern("a/**", "a/x\r/y.txt")).toBe(true);
+  });
+
+  it("matches Unicode code points without splitting surrogate pairs", () => {
+    expect(matchesGitattributesPattern("😀.txt", "😀.txt")).toBe(true);
+    expect(matchesGitattributesPattern("?.txt", "😀.txt")).toBe(true);
+    expect(matchesGitattributesPattern("?.txt", "ab.txt")).toBe(false);
+  });
+
+  it("reuses a compiled matcher with its options", () => {
+    const matcher = compileGitattributesPattern("*.TXT", {
+      caseInsensitive: true,
+    });
+
+    expect(matcher("README.txt")).toBe(true);
+    expect(matcher("README.md")).toBe(false);
+  });
+
+  it("propagates the shared pattern operation budget", () => {
+    const budget = new AnalysisBudget({ maxPatternOperations: 1 });
+    const matcher = compileGitattributesPattern("**/*.txt", { budget });
+
+    expect(() => matcher("docs/readme.txt")).toThrowError(
+      expect.objectContaining({
+        kind: "pattern-operations",
+        name: "AnalysisResourceLimitError",
+      })
+    );
+  });
+
+  it("exposes a dedicated error for standalone matcher limits", () => {
+    const error = new GitattributesPatternResourceLimitError("limit");
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error.name).toBe("GitattributesPatternResourceLimitError");
+    expect(error.message).toBe("limit");
   });
 });

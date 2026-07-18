@@ -133,8 +133,9 @@ describe(".gitattributes parser", () => {
   });
 
   it("rejects malformed octal and trailing escape sequences", () => {
+    const trailingEscape = "\"trailing\\";
     const analysis = analyzeGitattributes(
-      `${String.raw`"\378" text`}\n${String.raw`"\400" text`}\n${String.raw`"trailing\`}\n`
+      `${String.raw`"\378" text`}\n${String.raw`"\400" text`}\n${trailingEscape}\n`
     );
 
     expect(analysis.errors.map(({ code, line }) => ({ code, line }))).toEqual([
