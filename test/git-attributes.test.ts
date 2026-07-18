@@ -6,9 +6,12 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import {
   findGitRepositoryRoot,
+  GitResourceLimitError,
   isGitCaseInsensitive,
   scanGitAttributes,
 } from "../src/git-attributes.js";
+import { RESOURCE_LIMITS } from "../src/limits.js";
+import { AnalysisBudget } from "../src/resource-budget.js";
 import { analyzeGitattributesFile } from "../src/linter.js";
 
 const execFileAsync = promisify(execFile);
@@ -70,6 +73,63 @@ describe("Git-backed attribute analysis", () => {
     } finally {
       await rm(repository, { recursive: true, force: true });
     }
+  });
+
+  it("checks additional paths that Git did not list", async () => {
+    const repository = await mkdtemp(join(tmpdir(), "gitattributes-lint-"));
+    const observedPaths: string[] = [];
+
+    try {
+      await execFileAsync("git", ["init", "--quiet", repository]);
+      await writeFile(join(repository, ".gitattributes"), "* text\n", "utf8");
+      await writeFile(join(repository, ".gitignore"), "ignored.txt\n", "utf8");
+      await writeFile(join(repository, "ignored.txt"), "content\n", "utf8");
+      await execFileAsync("git", ["-C", repository, "add", ".gitattributes", ".gitignore"]);
+
+      const result = await scanGitAttributes(
+        repository,
+        [join(repository, "ignored.txt"), join(repository, "..", "outside.txt")],
+        {
+          onPath: (path) => {
+            observedPaths.push(path);
+          },
+        }
+      );
+
+      expect(result.checkedPathCount).toBe(observedPaths.length);
+      expect(observedPaths).toContain("ignored.txt");
+      expect(observedPaths).not.toContain("outside.txt");
+    } finally {
+      await rm(repository, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects oversized additional repository paths before spawning Git", async () => {
+    const repository = await mkdtemp(join(tmpdir(), "gitattributes-lint-"));
+
+    try {
+      await expect(
+        scanGitAttributes(repository, [
+          join(repository, "x".repeat(RESOURCE_LIMITS.maxGitPathLength + 1)),
+        ])
+      ).rejects.toBeInstanceOf(GitResourceLimitError);
+    } finally {
+      await rm(repository, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an expired scan budget before starting subprocesses", async () => {
+    await expect(
+      scanGitAttributes(
+        "/nonexistent-repository",
+        [],
+        {},
+        new AnalysisBudget({ maxElapsedMs: 0 })
+      )
+    ).rejects.toMatchObject({
+      kind: "analysis-time",
+      name: "AnalysisResourceLimitError",
+    });
   });
 
   it("does not reject Git's known negative-pattern advisory", async () => {
