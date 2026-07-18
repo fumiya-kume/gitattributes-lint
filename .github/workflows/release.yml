@@ -1,0 +1,155 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - master
+
+permissions: {}
+
+concurrency:
+  group: npm-release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build release artifact
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    outputs:
+      publish: ${{ steps.release.outputs.publish }}
+      ready: ${{ steps.release.outputs.ready }}
+      tag: ${{ steps.release.outputs.tag }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.18.0
+          package-manager-cache: false
+
+      - name: Check release readiness
+        id: release
+        shell: bash
+        run: |
+          PACKAGE_NAME="$(node -p "require('./package.json').name")"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          RELEASE_TAG="v${PACKAGE_VERSION}"
+
+          echo "name=${PACKAGE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "version=${PACKAGE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+
+          if node -p "require('./package.json').private === true" | grep -q true; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Package is private while implementation is in progress; skipping release."
+            exit 0
+          fi
+
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+          PACKAGE_SPEC="${PACKAGE_NAME}@${PACKAGE_VERSION}"
+          if npm view "$PACKAGE_SPEC" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "$PACKAGE_SPEC is already published; npm publish will be skipped."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "$PACKAGE_SPEC is new; npm publish will run after validation."
+          fi
+
+      - name: Install dependencies
+        if: steps.release.outputs.ready == 'true'
+        run: npm ci --ignore-scripts
+
+      - name: Lint
+        if: steps.release.outputs.ready == 'true'
+        run: npm run lint
+
+      - name: Typecheck
+        if: steps.release.outputs.ready == 'true'
+        run: npm run typecheck
+
+      - name: Test
+        if: steps.release.outputs.ready == 'true'
+        run: npm test
+
+      - name: Build
+        if: steps.release.outputs.ready == 'true'
+        run: npm run build
+
+      - name: Inspect package contents
+        if: steps.release.outputs.ready == 'true'
+        run: npm run check:package
+
+      - name: Pack release artifact
+        if: steps.release.outputs.ready == 'true'
+        run: |
+          mkdir -p release-artifact
+          npm pack --ignore-scripts --pack-destination release-artifact
+
+      - name: Create artifact checksum manifest
+        if: steps.release.outputs.ready == 'true'
+        working-directory: release-artifact
+        run: sha256sum ./*.tgz > SHA256SUMS
+
+      - name: Upload release artifact
+        if: steps.release.outputs.ready == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-artifact
+          path: release-artifact
+          if-no-files-found: error
+
+  publish:
+    name: Publish release artifact
+    needs: build
+    if: needs.build.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - name: Download release artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-artifact
+          path: release-artifact
+
+      - name: Set up Node.js for trusted publishing
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: 24.18.0
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Verify release artifact checksum
+        working-directory: release-artifact
+        run: sha256sum --check SHA256SUMS
+
+      - name: Publish package to npm
+        if: needs.build.outputs.publish == 'true'
+        working-directory: release-artifact
+        run: npm publish ./*.tgz --ignore-scripts --access public
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "GitHub release $RELEASE_TAG already exists"
+          else
+            gh release create "$RELEASE_TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "$RELEASE_TAG" \
+              --generate-notes
+          fi
