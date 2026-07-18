@@ -33,6 +33,7 @@ describe(".gitattributes pattern matching", () => {
     expect(matchesGitattributesPattern("**/README.md", "docs/api/README.md")).toBe(true);
     expect(matchesGitattributesPattern("a/**", "a")).toBe(false);
     expect(matchesGitattributesPattern("a/**", "a/file.txt")).toBe(true);
+    expect(matchesGitattributesPattern("a/**/**/b.txt", "a/b.txt")).toBe(true);
   });
 
   it("anchors a leading slash to the attribute file directory", () => {
@@ -89,6 +90,7 @@ describe(".gitattributes pattern matching", () => {
     expect(matchesGitattributesPattern(String.raw`\?.txt`, "?.txt")).toBe(true);
     expect(matchesGitattributesPattern(String.raw`\[name\]`, "[name]")).toBe(true);
     expect(matchesGitattributesPattern(String.raw`a\\b`, "a\\b")).toBe(true);
+    expect(matchesGitattributesPattern(String.raw`[\]]`, "]")).toBe(true);
   });
 
   it("preserves a literal leading ./ in a pattern", () => {
@@ -153,6 +155,19 @@ describe(".gitattributes pattern matching", () => {
       expect.objectContaining({
         kind: "pattern-operations",
         name: "AnalysisResourceLimitError",
+      })
+    );
+  });
+
+  it("enforces the standalone matcher operation limit", () => {
+    expect(() =>
+      matchesGitattributesPattern(
+        `${"*".repeat(256)}Z`,
+        `${"a".repeat(20_000)}Y`
+      )
+    ).toThrowError(
+      expect.objectContaining({
+        name: "GitattributesPatternResourceLimitError",
       })
     );
   });
